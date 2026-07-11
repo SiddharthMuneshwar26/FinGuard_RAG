@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # 🛡️ FinGuard-RAG
 
 A retrieval-augmented question-answering assistant over two 2026 research papers on
@@ -40,12 +41,6 @@ python scripts/download_papers.py     # fetch the two PDFs into data/
 python -m src.ingest                  # build the vector store  (~1 min on CPU)
 ```
 
-Set a key for synthesized answers (optional — omit to run in extractive mode):
-
-```bash
-export ANTHROPIC_API_KEY=...          # or: export LLM_PROVIDER=none
-```
-
 Run with local Ollama:
 
 ```bash
@@ -60,9 +55,6 @@ On Windows PowerShell:
 $env:LLM_PROVIDER = 'ollama'
 $env:OLLAMA_MODEL = 'qwen3:8b'
 streamlit run src/app.py
-```
-
-If your local Ollama model uses a different alias, set `OLLAMA_MODEL` accordingly.
 
 ## Run
 
@@ -103,3 +95,7 @@ convincing portfolio piece.
 - Swap Chroma → Qdrant for native hybrid + a more production feel
 - Expand the corpus (SR 26-2 text, SR 11-7, Basel/CCAR guidance) so retrieval scales
 - Streaming responses + conversation memory in the UI
+=======
+# FinGuard_RAG
+RAG-Chatbot 
+>>>>>>> a4379ff219a86162116a223023c359dd802211c7
