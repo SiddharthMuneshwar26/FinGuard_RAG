@@ -1,0 +1,9 @@
+faiss-cpu>=1.14,<2
+langchain-community>=0.4,<0.5
+langchain-core>=1.2,<2
+langchain-huggingface>=1.2,<2
+langchain-text-splitters>=1.1,<2
+pypdf>=6.6,<7
+requests>=2.32,<3
+sentence-transformers>=5.2,<6
+streamlit>=1.40,<2

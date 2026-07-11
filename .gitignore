@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Generated indexes and serialized chunks
+vectorstore/
+vectorstore_v2/
+notebooks/vectorstore/
+chunks*.pkl
+
+# Local caches and tooling
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.env
+*.log
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
