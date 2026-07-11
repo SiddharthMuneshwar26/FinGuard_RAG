@@ -50,11 +50,9 @@ The assistant answers questions using retrieved evidence from the indexed docume
 ### Example questions
 
 ```text
-What is SHAP?
+What is SHAP and SHARC?
 
 Why is interpretability important for regulatory capital models?
-
-How does SHARC support model-risk governance?
 
 What risks arise when banks deploy generative AI?
 
