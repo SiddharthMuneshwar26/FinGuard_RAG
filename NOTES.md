@@ -1,0 +1,3 @@
+- Phase 1: FastAPI service implemented and verified with health, retrieval-only, generation, validation, 503, and 500 tests.
+- Phase 2: Pytest API test suite implemented and verified: 7 tests passed.
+- Phase 3: Docker image built and verified; container starts on port 8080, retrieval-only /query works, ML models load from the image, and container runs as non-root appuser.

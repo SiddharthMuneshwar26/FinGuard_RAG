@@ -36,7 +36,7 @@ CHUNK_SEPARATORS = ["\n\n", "\n", ". ", " ", ""]
 RETRIEVAL_K = 10
 RERANK_TOP_N = 4
 
-OLLAMA_MODEL_NAME = os.getenv("OLLAMA_MODEL", "qwen3:8b")
+OLLAMA_MODEL_NAME = os.getenv("OLLAMA_MODEL", "qwen3-coder:30b")
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/")
 OLLAMA_TIMEOUT_SECONDS = int(os.getenv("OLLAMA_TIMEOUT_SECONDS", "180"))
 LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.2"))
