@@ -1,0 +1,34 @@
+# FinGuard ADK agent: install in its OWN virtual environment (.venv-agent), never
+# alongside requirements.txt.
+#
+# Why separate: google-adk 2.12.0 (latest as of 2026-10-23) pins
+#   opentelemetry-api>=1.39,<=1.42.1
+# while fastapi==0.142.2 (requirements.txt) and google-api-core>=2.36 require
+#   opentelemetry-api>=1.44.0
+# so the two cannot share one environment. ADK brings its own fastapi (0.141.x)
+# for `adk web`. Re-check these pins whenever google-adk is upgraded.
+
+# Agent framework (+ Cloud Trace / Cloud Logging exporters) and model connector
+google-adk[gcp]==2.12.0
+litellm>=1.84,<2
+# litellm's completion() imports mcp.types but does not declare it as a dependency.
+mcp>=2.3,<3
+
+# Keep google-api-core below 2.36: newer releases require opentelemetry-api>=1.44.
+google-api-core>=2.25,<2.36
+
+# Existing FinGuard retrieval stack (src/): FAISS + BGE embeddings + CrossEncoder
+faiss-cpu>=1.14,<2
+langchain-community>=0.4,<0.5
+langchain-core>=1.2,<2
+langchain-huggingface>=1.2,<2
+sentence-transformers>=5.2,<6
+requests>=2.32,<3
+
+# Google Workspace (Drive/Docs, read-only) + Secret Manager for the OAuth token
+google-api-python-client>=2.150,<3
+google-auth-oauthlib>=1.2,<2
+google-cloud-secret-manager>=2.20,<3
+
+# Tests
+pytest>=8,<10

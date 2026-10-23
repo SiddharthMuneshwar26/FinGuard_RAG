@@ -24,7 +24,7 @@ FinGuard-RAG/
 └── .gitignore
 ```
 
-Pipeline: PDF → recursive chunks → `BAAI/bge-base-en-v1.5` → FAISS (10) → `cross-encoder/ms-marco-MiniLM-L-6-v2` (4) → Ollama `qwen3:8b` → grounded answer with page citations.
+Pipeline: PDF → recursive chunks → `BAAI/bge-base-en-v1.5` → FAISS (10) → `cross-encoder/ms-marco-MiniLM-L-6-v2` (4) → Ollama `qwen3-coder:30b` → grounded answer with page citations.
 
 Metadata retained: title, filename, one-based page, document ID and stable chunk ID (`SHARC-p9-c1`). Backend imports, indexing, retrieval, reranking, Ollama generation and citation extraction pass. Streamlit is deferred.
 
