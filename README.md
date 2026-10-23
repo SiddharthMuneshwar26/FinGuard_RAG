@@ -252,7 +252,9 @@ The LLM is instructed to:
 FinGuard-RAG/
 ├── .github/
 │   └── workflows/
-│       └── ci.yml             # GitHub Actions: pytest + Docker image build
+│       └── ci.yml             # GitHub Actions: pytest + Docker image build + agent tests
+├── agents/
+│   └── finguard_agent/        # Google ADK agent: tools, guardrails, model selection
 ├── api/
 │   └── main.py                # FastAPI service (/health, /query)
 ├── app.py                     # Streamlit chat interface
@@ -261,8 +263,13 @@ FinGuard-RAG/
 ├── deploy/
 │   ├── DEPLOY.md              # Cloud Run deployment guide (not deployed)
 │   ├── deploy.sh              # Manual build, push and deploy script
+│   ├── agent_engine.md        # Vertex AI Agent Engine guide for the ADK agent (not deployed)
+│   ├── agent_engine_deploy.ps1 # Manual Agent Engine deploy script
 │   └── teardown.sh            # Manual cleanup script
 ├── notebooks/                 # Experiments and retrieval evaluation
+├── scripts/
+│   ├── build_sample_db.py     # SQLite database for the agent's read-only SQL tool
+│   └── run_agent.py           # One-shot agent run (text, image or audio)
 ├── src/
 │   ├── __init__.py
 │   ├── app.py                 # Alternative Streamlit interface
@@ -283,7 +290,10 @@ FinGuard-RAG/
 │   ├── cli.py                 # Terminal question-answering interface
 │   └── requirements.txt       # Points to the root requirements.txt
 ├── tests/
-│   └── test_api.py            # pytest API tests with a mocked RAG pipeline
+│   ├── test_api.py            # pytest API tests with a mocked RAG pipeline
+│   ├── test_agent.py          # 14 offline ADK agent tests (scripted LLM, mocked retriever)
+│   ├── test_agent_extensions.py # Offline tests for Drive, SQL, multimodal and tracing
+│   └── agent_fakes.py         # Scripted LLM and fakes shared by the agent tests
 ├── vectorstore/               # Prebuilt FAISS index (index.faiss, index.pkl), committed
 ├── .dockerignore              # Keeps data, notebooks, tests and docs out of the image
 ├── .gitignore
@@ -292,7 +302,8 @@ FinGuard-RAG/
 ├── NOTES.md                   # Verification log for the API, tests, Docker and CI
 ├── PROJECT_SUMMARY.md
 ├── README.md
-└── requirements.txt
+├── requirements.txt
+└── requirements-agent.txt     # Separate agent environment (google-adk pin conflict)
 ```
 
 The prebuilt `vectorstore/` index (about 540 KB) is committed so that the Docker image and the API work without rebuilding it, even though `.gitignore` lists the directory. Other generated indexes (`vectorstore_v2/`, `notebooks/vectorstore/`), serialized chunks (`chunks*.pkl`), Python caches and the virtual environment are excluded from Git.
@@ -580,6 +591,97 @@ These are read by `src/config.py` and apply to the API, the Streamlit app, the C
 
 ---
 
+## 🤖 Google ADK Agent
+
+`agents/finguard_agent/` wraps the same retrieval pipeline in a **Google Agent Development Kit (ADK)** agent. It answers only from the retrieved governance documents, cites page-level chunk IDs and abstains when nothing relevant is found. Guardrail callbacks run at three points: before the model, before each tool call and after the model.
+
+### What the agent does
+
+| Component | Implementation |
+|---|---|
+| Agent | `LlmAgent` (google-adk 2.12) with an instruction prompt: answer only from tool results, cite every claim as `[SHARC-p9-c1]` (chunk ID that encodes the page), otherwise reply exactly `That isn't covered in the provided documents.` |
+| Retrieval tool | `search_governance_documents(query)`: FAISS top-10 → CrossEncoder rerank → top-4, reusing `src/retrieval.py`, `src/reranker.py` and `src/vectorstore.py`. Returns `chunk_id`, `document_id`, `title`, `source`, `page`, `rerank_score` and `content`. |
+| Model | Chosen with `FINGUARD_AGENT_MODEL`: local Ollama through LiteLLM (default), Gemini (AI Studio key or Vertex AI) or OpenAI through LiteLLM |
+| Optional tools | Read-only Google Drive/Docs search, read-only SQL over an internal SQLite database (see below) |
+| Multimodal | Image (chart or scanned page) and audio questions with Gemini. Text-only fallback for Ollama/OpenAI. |
+| Tracing | Cloud Trace + Cloud Logging, enabled with `adk web --otel_to_cloud` or `FINGUARD_CLOUD_TRACE=1` |
+
+### Guardrails
+
+| Callback | Hook | What it does |
+|---|---|---|
+| Input guardrail | `before_model_callback` | Blocks prompt-injection patterns (for example "ignore previous instructions", "reveal your system prompt", role or jailbreak markers), personal data (email, phone, Luhn-valid card numbers, Aadhaar-like and PAN-like IDs) and input over 2,000 characters. A blocked request **never reaches the model**. |
+| Tool guardrail | `before_tool_callback` | Validates tool arguments (non-empty string query of at most 500 characters, no injection or PII, SELECT-only SQL) and caps searches at **3 per user turn**. The counter resets on each new turn. |
+| Grounding guardrail | `after_model_callback` | Checks every citation against the chunks and pages actually retrieved in this turn. Fabricated citations are removed, and a sentence backed only by fabricated citations is dropped. If no grounded citation remains, the answer is replaced with the abstention message. |
+
+Limits can be changed with `FINGUARD_MAX_INPUT_CHARS`, `FINGUARD_MAX_QUERY_CHARS` and `FINGUARD_MAX_SEARCHES_PER_TURN`. The grounding check runs on the final response. In streaming mode, partial chunks are shown before the check, so use non-streaming mode when strict grounding matters.
+
+### Separate environment (important)
+
+The agent has its **own** requirements file and virtual environment. google-adk 2.12.0 pins `opentelemetry-api<=1.42.1`, while `fastapi==0.142.2` in `requirements.txt` (and `google-api-core>=2.36`) need `>=1.44`, so the two cannot share one environment.
+
+```powershell
+py -3.12 -m venv .venv-agent
+.\.venv-agent\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+pip install --index-url https://download.pytorch.org/whl/cpu torch
+pip install -r requirements-agent.txt
+pip check
+```
+
+### Run it
+
+The FAISS index must exist (`vectorstore/`). For the default model, Ollama must be running with a **tool-calling** model pulled (`ollama pull qwen3-coder:30b`; check with `ollama show qwen3-coder:30b` that "tools" is listed).
+
+```powershell
+# Browser dev UI (pick "finguard_agent" in the top-left dropdown)
+adk web agents
+
+# Terminal chat
+adk run agents\finguard_agent
+
+# One-shot script, optionally with an image or audio file (Gemini only)
+python scripts\run_agent.py "What does SR 26-2 require for model inventories?"
+python scripts\run_agent.py "Which risk does this chart show?" --image chart.png
+```
+
+`adk` also loads environment variables from `agents\finguard_agent\.env` (see `.env.example` there). That file is gitignored.
+
+### Environment variables
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `FINGUARD_AGENT_MODEL` | `ollama_chat/qwen3-coder:30b` | `ollama_chat/<model>`, `gemini-2.5-flash`, `openai/gpt-4o-mini` or any LiteLLM `<provider>/<model>` |
+| `OLLAMA_API_BASE` | `http://localhost:11434` | Ollama server for LiteLLM |
+| `GOOGLE_API_KEY` | | Gemini through Google AI Studio |
+| `GOOGLE_GENAI_USE_VERTEXAI` (or newer `GOOGLE_GENAI_USE_ENTERPRISE`), `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION` | | Gemini through Vertex AI, using Application Default Credentials |
+| `OPENAI_API_KEY` | | OpenAI through LiteLLM |
+| `FINGUARD_ENABLE_DRIVE` | `0` | Adds the read-only Google Drive/Docs tool |
+| `FINGUARD_GOOGLE_OAUTH_SECRET` / `FINGUARD_GOOGLE_OAUTH_TOKEN_JSON` / `FINGUARD_GOOGLE_OAUTH_TOKEN_FILE` | | Drive OAuth token from Secret Manager, an env var or a gitignored file (never hard-coded) |
+| `FINGUARD_ENABLE_SQL` | `0` | Adds the read-only SQL tools |
+| `FINGUARD_SQL_DB` | `data/finguard_internal.db` | SQLite file for the SQL tool |
+| `FINGUARD_CLOUD_TRACE` | `0` | Exports traces and logs to Cloud Trace / Cloud Logging |
+
+### Google Cloud add-ons
+
+- **Google Workspace (Drive/Docs):** `search_google_drive(query)` uses the Drive v3 API with OAuth 2.0 and only the `drive.readonly` scope. Tokens with broader scopes are rejected. Google Docs results include a text snippet, and results are cited as `[drive:<file_id>]`. Create the token once with `python -m agents.finguard_agent.workspace_auth --client-secrets .secrets\client_secret.json --out .secrets\drive_token.json`, which needs a "Desktop app" OAuth client in your Google Cloud project with the Drive API enabled.
+- **Internal SQL:** `describe_internal_database()` and `query_internal_database(sql, parameters)` run parameterised, read-only queries. Only single `SELECT` statements are accepted, the database is opened in SQLite `mode=ro` with `PRAGMA query_only` and an authorizer that denies writes, and at most 50 rows are returned. Build the demo database with `python scripts\build_sample_db.py` (synthetic freight-rate rows) or load a real CSV with `--csv path\to\freight.csv`.
+- **Multimodal (Gemini):** attach an image or audio clip in `adk web`, or use `scripts\run_agent.py --image/--audio`. Attachments must be image, audio or PDF files of 10 MB or less. With a text-only model they are replaced by a note.
+- **Tracing:** `adk web --otel_to_cloud agents`, or set `FINGUARD_CLOUD_TRACE=1` for scripts. Requires `gcloud auth application-default login` and the Cloud Trace and Cloud Logging APIs.
+- **Vertex AI Agent Engine:** see [`deploy/agent_engine.md`](deploy/agent_engine.md) and `deploy/agent_engine_deploy.ps1` (written, not yet deployed).
+
+### Agent tests
+
+All agent tests run offline: the LLM is a scripted fake and the retriever is mocked, so no API keys, Ollama or model downloads are needed.
+
+```powershell
+.\.venv-agent\Scripts\python.exe -m pytest -v tests\test_agent.py tests\test_agent_extensions.py
+```
+
+`tests/test_agent.py` has 14 tests: an end-to-end grounded answer, one test each for the injection, PII and length blocks, a no-false-positive check, tool-argument validation, the 3-search cap and its reset on the next turn, citation stripping, abstention with no grounded content, abstention when retrieval is empty, page-style citation checks, model selection and removal of a stray abstention sentence from a grounded answer. `tests/test_agent_extensions.py` has 7 tests for the SQL, Drive, multimodal and tracing add-ons. Both files are skipped automatically in the API test environment, which has no google-adk.
+
+---
+
 ## 🐳 Docker
 
 The `Dockerfile` builds a CPU-only image of the REST API.
@@ -667,6 +769,7 @@ This was verified with Docker Desktop on Windows. On Linux, `host.docker.interna
 
 1. **`test` job:** sets up Python 3.12, installs `requirements.txt` and `pytest`, then runs `python -m pytest -v`.
 2. **`docker-build` job:** runs after `test` passes and builds the Docker image with Buildx, without pushing it to any registry.
+3. **`agent-tests` job:** installs CPU-only PyTorch and `requirements-agent.txt` in a separate environment, runs `pip check`, then runs only the offline agent tests (`tests/test_agent.py`, `tests/test_agent_extensions.py`).
 
 CI does not deploy the service or run Ollama.
 
@@ -677,6 +780,7 @@ CI does not deploy the service or run Ollama.
 Deployment artifacts are included, but the service is **not currently deployed**.
 
 - [`deploy/DEPLOY.md`](deploy/DEPLOY.md) is the step-by-step guide for a private, scale-to-zero Google Cloud Run service: authentication required, 0–1 instances, concurrency 4, 2 CPU, 4 GiB memory, 300-second timeout, port 8080 and `HF_HUB_OFFLINE=1`. It also covers the spend-cap budget, identity-token tests, cold-start measurement, costs and teardown.
+- [`deploy/agent_engine.md`](deploy/agent_engine.md) and `deploy/agent_engine_deploy.ps1` deploy the ADK agent to Vertex AI Agent Engine (written, not yet run).
 - `deploy/deploy.sh` and `deploy/teardown.sh` are manual scripts with placeholders for the GCP project and region. Neither runs automatically, and both ask for confirmation.
 
 Ollama does not run inside Cloud Run, so a Cloud Run deployment is intended for retrieval-only requests (`"generate": false`).

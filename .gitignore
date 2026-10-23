@@ -25,3 +25,9 @@ chunks*.pkl
 Thumbs.db
 .vscode/
 .idea/
+
+# ADK agent
+.venv-agent/
+.secrets/
+build/
+data/*.db

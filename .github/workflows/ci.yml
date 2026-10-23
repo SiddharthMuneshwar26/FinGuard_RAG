@@ -45,3 +45,27 @@ jobs:
           context: .
           push: false
           tags: fingguard-rag-api:ci
+
+  agent-tests:
+    # Separate environment: google-adk pins opentelemetry-api<=1.42.1, which
+    # conflicts with fastapi==0.142.2 in requirements.txt (see requirements-agent.txt).
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install agent dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install --index-url https://download.pytorch.org/whl/cpu torch
+          pip install -r requirements-agent.txt
+          pip check
+
+      - name: Run agent tests (offline, scripted LLM, mocked retriever)
+        run: python -m pytest -v tests/test_agent.py tests/test_agent_extensions.py
