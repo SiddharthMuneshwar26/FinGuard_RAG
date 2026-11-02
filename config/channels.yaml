@@ -1,0 +1,45 @@
+# Channel capability flags for the conversation service.
+#
+# The caller identifies its channel with the X-Channel header. Behaviour is
+# driven by this file, not by code: change a flag here and restart, no deploy of
+# new logic needed. An unknown or missing channel falls back to `default_channel`
+# (the least-privileged profile).
+#
+#   trusted            the channel authenticates users before calling us (mobile SDK)
+#   pii_policy         "block": refuse the message; "mask": replace PII with
+#                      placeholders and continue
+#   max_input_chars    hard input limit for this channel
+#   streaming          may call /v1/chat/stream
+#   generation         may call the LLM; false = retrieval-only answers
+#   history_turns      prior turns sent to the model as conversation context
+#   retrieval_cache    reuse cached retrieval results for repeated queries
+
+default_channel: web
+
+channels:
+  web:
+    trusted: false
+    pii_policy: block
+    max_input_chars: 1000
+    streaming: true
+    generation: true
+    history_turns: 2
+    retrieval_cache: true
+
+  mobile_sdk:
+    trusted: true
+    pii_policy: mask
+    max_input_chars: 2000
+    streaming: true
+    generation: true
+    history_turns: 4
+    retrieval_cache: true
+
+  internal:
+    trusted: true
+    pii_policy: mask
+    max_input_chars: 4000
+    streaming: false
+    generation: false        # retrieval-only, e.g. for analysts and evaluation jobs
+    history_turns: 0
+    retrieval_cache: false

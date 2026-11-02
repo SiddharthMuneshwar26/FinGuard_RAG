@@ -2,3 +2,4 @@
 - Phase 2: Pytest API test suite implemented and verified: 7 tests passed.
 - Phase 3: Docker image built and verified; container starts on port 8080, retrieval-only /query works, ML models load from the image, and container runs as non-root appuser.
 - Phase 4: GitHub Actions CI verified successfully; pytest passed 7/7 and Docker image build passed.
+- Phase 5: LangGraph conversation service added (conversation/, api/conversation_api.py): PostgreSQL checkpointer, Redis retrieval/session cache, SSE streaming, channel capability flags, PII masking, append-only PostgreSQL audit log, LiteLLM timeouts/retries/fallbacks with retrieval-only degradation, JSON logs, Prometheus metrics. Verified: 28 offline tests + 4 PostgreSQL 16 / Redis integration tests passed; agent tests 21/21 still pass after moving detection/grounding helpers to src/safety.py and src/grounding.py.
