@@ -1,0 +1,51 @@
+# Local backing services for the conversation API.
+#
+#   docker compose up -d                 # PostgreSQL 16 + Redis 7
+#   docker compose --profile api up -d   # ...plus the conversation API on :8081
+#
+# Then point the API at them (already set for the `api` service below):
+#   FINGUARD_DATABASE_URL=postgresql://finguard:finguard@localhost:5432/finguard
+#   FINGUARD_REDIS_URL=redis://localhost:6379/0
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: finguard
+      POSTGRES_PASSWORD: finguard   # local development only
+      POSTGRES_DB: finguard
+    ports: ["5432:5432"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U finguard"]
+      interval: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+    ports: ["6379:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      retries: 10
+
+  api:
+    profiles: ["api"]
+    build:
+      context: .
+      dockerfile: Dockerfile.conversation
+    environment:
+      FINGUARD_DATABASE_URL: postgresql://finguard:finguard@postgres:5432/finguard
+      FINGUARD_REDIS_URL: redis://redis:6379/0
+      FINGUARD_CHAT_MODEL: ${FINGUARD_CHAT_MODEL:-ollama_chat/qwen3-coder:30b}
+      FINGUARD_FALLBACK_MODELS: ${FINGUARD_FALLBACK_MODELS:-}
+      OLLAMA_API_BASE: ${OLLAMA_API_BASE:-http://host.docker.internal:11434}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+    ports: ["8081:8080"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+
+volumes:
+  pgdata:

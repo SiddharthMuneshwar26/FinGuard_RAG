@@ -25,6 +25,7 @@ It combines dense retrieval, CrossEncoder reranking, grounded prompting, local L
 [Installation](#-installation-and-setup) •
 [Usage](#-usage) •
 [REST API](#-rest-api) •
+[Conversation Service](#-conversation-service-langgraph-postgresql-redis) •
 [Docker](#-docker) •
 [Testing](#-testing-and-ci) •
 [Evaluation](#-retrieval-evaluation)
@@ -252,13 +253,17 @@ The LLM is instructed to:
 FinGuard-RAG/
 ├── .github/
 │   └── workflows/
-│       └── ci.yml             # GitHub Actions: pytest + Docker image build + agent tests
+│       └── ci.yml             # GitHub Actions: pytest + Docker image build + agent tests + conversation tests (PostgreSQL/Redis)
 ├── agents/
 │   └── finguard_agent/        # Google ADK agent: tools, guardrails, model selection
 ├── api/
-│   └── main.py                # FastAPI service (/health, /query)
+│   ├── main.py                # FastAPI service (/health, /query)
+│   └── conversation_api.py    # Conversation API v1: /v1/chat, /v1/chat/stream (SSE), sessions, /ready, /metrics
 ├── app.py                     # Streamlit chat interface
 ├── assets/                     # README screenshots and evaluation visuals
+├── config/
+│   └── channels.yaml          # Per-channel capability flags (web, mobile_sdk, internal)
+├── conversation/              # LangGraph graph, PostgreSQL checkpoints + audit log, Redis cache, LiteLLM fallbacks
 ├── data/                      # Source research papers
 ├── deploy/
 │   ├── DEPLOY.md              # Cloud Run deployment guide (not deployed)
@@ -285,6 +290,8 @@ FinGuard-RAG/
 │   ├── reranker.py            # CrossEncoder reranking
 │   ├── prompts.py             # Grounding and citation instructions
 │   ├── llm.py                 # Ollama client
+│   ├── safety.py              # Prompt-injection / PII detection and PII masking (shared)
+│   ├── grounding.py           # Citation grounding: strip fabricated citations (shared)
 │   ├── rag_chain.py           # End-to-end RAG orchestration
 │   ├── build_index.py         # Index-building CLI
 │   ├── cli.py                 # Terminal question-answering interface
@@ -293,17 +300,23 @@ FinGuard-RAG/
 │   ├── test_api.py            # pytest API tests with a mocked RAG pipeline
 │   ├── test_agent.py          # 14 offline ADK agent tests (scripted LLM, mocked retriever)
 │   ├── test_agent_extensions.py # Offline tests for Drive, SQL, multimodal and tracing
-│   └── agent_fakes.py         # Scripted LLM and fakes shared by the agent tests
+│   ├── agent_fakes.py         # Scripted LLM and fakes shared by the agent tests
+│   ├── test_conversation.py   # Offline conversation-service tests (state, SSE, guardrails, audit, fallbacks)
+│   ├── test_conversation_integration.py # Same flows against real PostgreSQL + Redis
+│   └── conversation_fakes.py  # Scripted streaming model and fake retriever
 ├── vectorstore/               # Prebuilt FAISS index (index.faiss, index.pkl), committed
 ├── .dockerignore              # Keeps data, notebooks, tests and docs out of the image
 ├── .gitignore
 ├── Dockerfile                 # CPU-only API image (Python 3.12)
+├── Dockerfile.conversation    # Conversation API image
+├── docker-compose.yml         # PostgreSQL 16 + Redis 7 (+ conversation API profile)
 ├── LICENSE
 ├── NOTES.md                   # Verification log for the API, tests, Docker and CI
 ├── PROJECT_SUMMARY.md
 ├── README.md
 ├── requirements.txt
-└── requirements-agent.txt     # Separate agent environment (google-adk pin conflict)
+├── requirements-agent.txt     # Separate agent environment (google-adk pin conflict)
+└── requirements-conversation.txt # Conversation service (shares the main environment)
 ```
 
 The prebuilt `vectorstore/` index (about 540 KB) is committed so that the Docker image and the API work without rebuilding it, even though `.gitignore` lists the directory. Other generated indexes (`vectorstore_v2/`, `notebooks/vectorstore/`), serialized chunks (`chunks*.pkl`), Python caches and the virtual environment are excluded from Git.
@@ -679,6 +692,91 @@ All agent tests run offline: the LLM is a scripted fake and the retriever is moc
 ```
 
 `tests/test_agent.py` has 14 tests: an end-to-end grounded answer, one test each for the injection, PII and length blocks, a no-false-positive check, tool-argument validation, the 3-search cap and its reset on the next turn, citation stripping, abstention with no grounded content, abstention when retrieval is empty, page-style citation checks, model selection and removal of a stray abstention sentence from a grounded answer. `tests/test_agent_extensions.py` has 7 tests for the SQL, Drive, multimodal and tracing add-ons. Both files are skipped automatically in the API test environment, which has no google-adk.
+
+---
+
+## 💬 Conversation Service (LangGraph, PostgreSQL, Redis)
+
+A stateful, multi-turn backend for the same retrieval stack, built for the
+requirements of a regulated environment: per-session state that survives
+restarts, streaming responses, channel-specific capability flags, PII masking
+and an append-only audit trail. Code: `conversation/` and `api/conversation_api.py`.
+
+```text
+ client (web / mobile SDK)  ──X-Channel, X-Request-ID──►  FastAPI /v1
+                                                            │
+                         capability flags (config/channels.yaml)
+                                                            ▼
+   LangGraph:  guard_input → contextualize → retrieve → generate → ground → finalize
+                   │ blocked                    │ Redis      │ LiteLLM: timeout,
+                   └──────────► finalize        │ cache      │ retries, fallbacks,
+                                                ▼            │ retrieval-only if all fail
+                                       FAISS + CrossEncoder  ▼
+   state per session ──► PostgreSQL checkpoints (thread_id = session_id)
+   every decision    ──► PostgreSQL audit_log (append-only, PII-masked, by request id)
+   observability     ──► JSON logs (PII-masked) · Prometheus /metrics · /ready
+```
+
+| Concern | Implementation |
+|---|---|
+| Conversational state | LangGraph `StateGraph`, `PostgresSaver` checkpointer; history carries across turns and process restarts |
+| Follow-up questions | `contextualize` node resolves "what about its limitations?" against the previous user turn before retrieval |
+| Caching | Redis: repeated retrieval queries (TTL) and session metadata; a Redis outage degrades to a cache miss |
+| Streaming | `POST /v1/chat/stream`, Server-Sent Events: `start`, `delta`…, `final` (grounded answer) |
+| Channel-aware behaviour | `X-Channel` → `config/channels.yaml`: PII block vs mask, input limit, streaming, generation, history depth, cache; unknown channels get the least-privileged profile |
+| PII | Detected (email, phone, card with Luhn check, PAN, Aadhaar) and either blocked or masked to `[EMAIL]`-style placeholders before the model, logs, cache or audit log see it |
+| Guardrails | Prompt-injection block, per-channel length limit, citation grounding (fabricated chunk ids stripped, abstain if nothing grounded); blocked turns are never replayed as history |
+| Resilience | Per-call timeout and retries; ordered fallback models; if every model fails, a retrieval-only answer with citations instead of an error |
+| Audit | `audit_log` table; a trigger rejects every `UPDATE`/`DELETE`; events: `request_received`, `pii_masked`, `guardrail_*`, `retrieval`, `llm_call`, `grounding`, `response_sent`; if the audit write fails the request fails (503) |
+| Observability | Request id on every response and audit row; JSON logs; Prometheus counters/histograms for turns, latency, guardrail blocks, cache hit rate and audit failures |
+
+### Run it
+
+```powershell
+docker compose up -d postgres redis
+
+pip install --index-url https://download.pytorch.org/whl/cpu torch
+pip install -r requirements.txt -r requirements-conversation.txt
+
+$env:FINGUARD_DATABASE_URL = "postgresql://finguard:finguard@localhost:5432/finguard"
+$env:FINGUARD_REDIS_URL    = "redis://localhost:6379/0"
+$env:FINGUARD_CHAT_MODEL   = "ollama_chat/qwen3-coder:30b"
+$env:FINGUARD_FALLBACK_MODELS = "gemini/gemini-2.5-flash"   # optional, needs GEMINI_API_KEY
+
+uvicorn api.conversation_api:app --port 8081
+```
+
+Or everything in containers: `docker compose --profile api up -d --build`.
+
+```bash
+# Turn 1 (a new session id is returned if you omit one)
+curl -s localhost:8081/v1/chat -H "content-type: application/json" -H "X-Channel: mobile_sdk" \
+  -d '{"session_id": "demo-session-1", "message": "What is SHAP?"}'
+
+# Turn 2, streamed; "it" is resolved from turn 1
+curl -N localhost:8081/v1/chat/stream -H "content-type: application/json" -H "X-Channel: web" \
+  -d '{"session_id": "demo-session-1", "message": "Where is it applied?"}'
+
+curl -s localhost:8081/v1/sessions/demo-session-1
+curl -s localhost:8081/metrics | grep finguard_
+```
+
+### Tests
+
+```bash
+pip install -r requirements-conversation.txt
+python -m pytest tests/test_conversation.py          # offline: scripted model, fake retriever
+
+docker compose up -d postgres redis                  # integration: real PostgreSQL + Redis
+FINGUARD_TEST_DATABASE_URL=postgresql://finguard:finguard@localhost:5432/finguard \
+FINGUARD_TEST_REDIS_URL=redis://localhost:6379/0 \
+python -m pytest tests/test_conversation_integration.py
+```
+
+The integration tests restart the service mid-conversation (state is restored
+from PostgreSQL), share the retrieval cache between two service instances
+through Redis, and prove that `UPDATE` and `DELETE` on `audit_log` are rejected.
+CI runs both with PostgreSQL and Redis service containers (`conversation-tests` job).
 
 ---
 

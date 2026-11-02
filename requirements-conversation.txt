@@ -1,0 +1,32 @@
+# FinGuard conversation service (conversation/ + api/conversation_api.py).
+#
+# Shares the main environment: install AFTER requirements.txt so the real
+# FAISS + BGE + CrossEncoder retriever is available:
+#
+#   pip install --index-url https://download.pytorch.org/whl/cpu torch
+#   pip install -r requirements.txt -r requirements-conversation.txt
+#
+# The offline test suite only needs this file (retriever and model are faked),
+# which is what the CI "conversation-tests" job installs.
+
+# Web API (same pins as requirements.txt)
+fastapi==0.142.2
+starlette==1.7.0
+uvicorn==0.54.0
+httpx>=0.27,<1
+
+# Conversation graph + PostgreSQL checkpointer
+langgraph>=1.0,<2
+langgraph-checkpoint-postgres>=3,<4
+psycopg[binary]>=3.2,<4
+psycopg-pool>=3.2,<4
+
+# Cache, model routing, config, metrics
+redis>=5,<7
+litellm>=1.84,<2
+mcp>=2.3,<3          # litellm imports mcp.types without declaring it
+pyyaml>=6,<7
+prometheus-client>=0.21,<1
+
+# Tests
+pytest>=8,<10
